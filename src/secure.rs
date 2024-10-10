@@ -67,7 +67,7 @@ impl SharedKeyHandshake {
         // Verify timestamp
         let current_ts = now_ms();
         if current_ts - handshake_data.timestamp > HANDSHAKE_TIMEOUT {
-            return Err("Handshake timeout".to_string());
+            return Err(format!("Handshake timeout {} vs {}", current_ts, handshake_data.timestamp));
         }
 
         // Verify peer IDs

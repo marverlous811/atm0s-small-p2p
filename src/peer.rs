@@ -12,6 +12,7 @@ use tokio::sync::{
 use crate::{
     ctx::SharedCtx,
     msg::P2pServiceId,
+    now_ms,
     secure::HandshakeProtocol,
     stream::{wait_object, write_object, P2pQuicStream},
     ConnectionId, PeerId,
@@ -136,13 +137,13 @@ async fn run_connection<SECURE: HandshakeProtocol>(
     internal_tx: Sender<InternalEvent>,
 ) -> anyhow::Result<()> {
     let to_id = if let PeerConnectionDirection::Outgoing(dest) = direction {
-        let auth = secure.create_request(local_id, dest);
+        let auth = secure.create_request(local_id, dest, now_ms());
         write_object::<_, _, 500>(&mut send, &ConnectReq { from: local_id, to: dest, auth }).await?;
         let res: ConnectRes = wait_object::<_, _, 500>(&mut recv).await?;
         log::info!("{res:?}");
         match res.result {
             Ok(auth) => {
-                if let Err(e) = secure.verify_response(auth, dest, local_id) {
+                if let Err(e) = secure.verify_response(auth, dest, local_id, now_ms()) {
                     return Err(anyhow!("destination auth failure: {e}"));
                 }
                 dest
@@ -153,7 +154,7 @@ async fn run_connection<SECURE: HandshakeProtocol>(
         }
     } else {
         let req: ConnectReq = wait_object::<_, _, 500>(&mut recv).await?;
-        if let Err(e) = secure.verify_request(req.auth, req.from, req.to) {
+        if let Err(e) = secure.verify_request(req.auth, req.from, req.to, now_ms()) {
             write_object::<_, _, 500>(&mut send, &ConnectRes { result: Err(e.clone()) }).await?;
             return Err(anyhow!("destination auth failure: {e}"));
         } else if req.to != local_id {
@@ -166,7 +167,7 @@ async fn run_connection<SECURE: HandshakeProtocol>(
             .await?;
             return Err(anyhow!("destination wrong"));
         } else {
-            let auth = secure.create_response(req.to, req.from);
+            let auth = secure.create_response(req.to, req.from, now_ms());
             write_object::<_, _, 500>(&mut send, &ConnectRes { result: Ok(auth) }).await?;
             req.from
         }

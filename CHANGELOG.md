@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/marverlous811/atm0s-small-p2p/compare/v0.1.0...v0.1.1) - 2024-10-24
+
+### Other
+
+- release v0.1.0 ([#14](https://github.com/marverlous811/atm0s-small-p2p/pull/14))
+
 ## [0.1.0](https://github.com/8xFF/atm0s-small-p2p/releases/tag/v0.1.0) - 2024-10-23
 
 ### Added

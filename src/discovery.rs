@@ -59,6 +59,7 @@ impl PeerDiscovery {
         log::debug!("[PeerDiscovery] apply sync with addrs: {:?}", sync.0);
         for (peer, last_updated, address) in sync.0.into_iter() {
             if last_updated + TIMEOUT_AFTER > now_ms {
+                #[allow(clippy::collapsible_else_if)]
                 if self.remotes.insert(peer, (last_updated, address)).is_none() {
                     log::info!("[PeerDiscovery] added new peer {peer}");
                 }
@@ -66,7 +67,7 @@ impl PeerDiscovery {
         }
     }
     pub fn remotes(&self) -> impl Iterator<Item = PeerAddress> + '_ {
-        self.remotes.iter().map(|(p, (_, a))| PeerAddress(*p, a.clone())).chain(self.seeds.iter().map(|s| s.clone()))
+        self.remotes.iter().map(|(p, (_, a))| PeerAddress(*p, a.clone())).chain(self.seeds.iter().cloned())
     }
 }
 

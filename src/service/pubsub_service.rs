@@ -228,7 +228,7 @@ impl PubsubService {
                                     for (_, sub_tx) in state.local_subscribers.iter() {
                                         let _ = sub_tx.send(SubscriberEvent::PeerJoined(PeerSrc::Remote(from_peer)));
                                     }
-                                    // we also send subscribe state it remote, as publisher it only care about whereever this node is a subscriber
+                                    // we also send subscribe state it remote, as publisher it only care about wherever this node is a subscriber
                                     if !state.local_subscribers.is_empty() {
                                         self.send_to(from_peer, &PubsubMessage::SubscriberJoined(channel)).await;
                                     }
@@ -254,9 +254,9 @@ impl PubsubService {
                                     for (_, pub_tx) in state.local_publishers.iter() {
                                         let _ = pub_tx.send(PublisherEvent::PeerJoined(PeerSrc::Remote(from_peer)));
                                     }
-                                    // we also send publisher state it remote, as subscriber it only care about whereever this node is a publisher
+                                    // we also send publisher state it remote, as subscriber it only care about wherever this node is a publisher
                                     if !state.local_publishers.is_empty() {
-                                        self.send_to(from_peer, &&PubsubMessage::PublisherJoined(channel)).await;
+                                        self.send_to(from_peer, &PubsubMessage::PublisherJoined(channel)).await;
                                     }
                                 }
                             }
@@ -371,6 +371,7 @@ impl PubsubService {
         }
     }
 
+    #[allow(clippy::collapsible_else_if)]
     async fn on_internal(&mut self, control: InternalMsg) -> anyhow::Result<()> {
         match control {
             InternalMsg::PublisherCreated(local_id, channel, tx) => {
@@ -395,7 +396,7 @@ impl PubsubService {
                 let state = self.channels.entry(channel).or_default();
                 state.local_publishers.remove(&local_id);
                 if state.local_publishers.is_empty() {
-                    // if this is last local_publisher => notify all subscibers
+                    // if this is last local_publisher => notify all subscribers
                     for (_, sub_tx) in state.local_subscribers.iter() {
                         let _ = sub_tx.send(SubscriberEvent::PeerLeaved(PeerSrc::Local));
                     }
@@ -410,7 +411,7 @@ impl PubsubService {
                     let _ = tx.send(SubscriberEvent::PeerJoined(PeerSrc::Local));
                 }
                 if state.local_subscribers.is_empty() {
-                    // if this is first local_subsciber => notify to all local_publishers
+                    // if this is first local_subsrciber => notify to all local_publishers
                     for (_, pub_tx) in state.local_publishers.iter() {
                         let _ = pub_tx.send(PublisherEvent::PeerJoined(PeerSrc::Local));
                     }

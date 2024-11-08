@@ -1,5 +1,5 @@
 //! PeerAlias allow control a peer-connection from othert task
-//! This is done by using control_tx to send control to running task over chanel
+//! This is done by using control_tx to send control to running task over channel
 
 use tokio::sync::{mpsc::Sender, oneshot};
 
@@ -49,6 +49,6 @@ impl PeerConnectionAlias {
     pub(crate) async fn open_stream(&self, service: P2pServiceId, source: PeerId, dest: PeerId, meta: Vec<u8>) -> anyhow::Result<P2pQuicStream> {
         let (tx, rx) = oneshot::channel();
         self.control_tx.send(PeerConnectionControl::OpenStream(service, source, dest, meta, tx)).await?;
-        Ok(rx.await??)
+        rx.await?
     }
 }

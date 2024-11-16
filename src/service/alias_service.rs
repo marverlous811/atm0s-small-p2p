@@ -92,10 +92,12 @@ impl AliasServiceRequester {
 
     pub async fn find<A: Into<AliasId>>(&self, alias: A) -> Option<AliasFoundLocation> {
         let alias: AliasId = alias.into();
-        log::debug!("[AliasServiceRequester] find alias {alias}");
+        log::info!("[AliasServiceRequester] find alias {alias}");
         let (tx, rx) = oneshot::channel();
         self.tx.send(AliasControl::Find(alias, tx)).expect("alias service main channal should work");
-        rx.await.ok()?
+        let res = rx.await.ok()?;
+        log::info!("[AliasServiceRequester] find alias {alias} => result {res:?}");
+        res
     }
 
     pub async fn open_stream<A: Into<AliasId>>(&self, alias: A, over_service: P2pServiceRequester, meta: Vec<u8>) -> anyhow::Result<AliasStreamLocation> {
@@ -165,30 +167,28 @@ impl AliasService {
         AliasServiceRequester { tx: self.tx.clone() }
     }
 
-    pub async fn recv(&mut self) -> anyhow::Result<()> {
-        select! {
-            _ = self.interval.tick() => {
-                self.on_tick().await;
-                Ok(())
-            },
-            event = self.service.recv() => match event.expect("service channel should work") {
-                P2pServiceEvent::Unicast(from, data) => {
-                    if let Ok(msg) = bincode::deserialize::<AliasMessage>(&data) {
-                        self.on_msg(from, msg).await;
+    pub async fn run_loop(&mut self) -> anyhow::Result<()> {
+        loop {
+            select! {
+                _ = self.interval.tick() => {
+                    self.on_tick().await;
+                },
+                event = self.service.recv() => match event.expect("service channel should work") {
+                    P2pServiceEvent::Unicast(from, data) => {
+                        if let Ok(msg) = bincode::deserialize::<AliasMessage>(&data) {
+                            self.on_msg(from, msg).await;
+                        }
                     }
-                    Ok(())
-                }
-                P2pServiceEvent::Broadcast(from, data) => {
-                    if let Ok(msg) = bincode::deserialize::<AliasMessage>(&data) {
-                        self.on_msg(from, msg).await;
+                    P2pServiceEvent::Broadcast(from, data) => {
+                        if let Ok(msg) = bincode::deserialize::<AliasMessage>(&data) {
+                            self.on_msg(from, msg).await;
+                        }
                     }
-                    Ok(())
+                    P2pServiceEvent::Stream(..) => {},
+                },
+                control = self.rx.recv() => {
+                    self.on_control(control.expect("service channel should work")).await;
                 }
-                P2pServiceEvent::Stream(..) => Ok(()),
-            },
-            control = self.rx.recv() => {
-                self.on_control(control.expect("service channel should work")).await;
-                Ok(())
             }
         }
     }
@@ -233,11 +233,14 @@ impl AliasServiceInternal {
             match req.state {
                 FindRequestState::CheckHint(requested_at, ref mut _hash_set) => {
                     if requested_at + HINT_TIMEOUT_MS <= now {
+                        log::info!("[AliasServiceInternal] check hint timeout {alias_id} => switch to scan");
+                        self.outs.push_back(InternalOutput::Broadcast(AliasMessage::Scan(*alias_id)));
                         req.state = FindRequestState::Scan(now);
                     }
                 }
                 FindRequestState::Scan(requested_at) => {
                     if requested_at + SCAN_TIMEOUT_MS <= now {
+                        log::info!("[AliasServiceInternal] find scan timeout {alias_id}");
                         timeout_reqs.push(*alias_id);
                         while let Some(tx) = req.waits.pop() {
                             tx.send(None).print_on_err2("");
@@ -253,9 +256,10 @@ impl AliasServiceInternal {
     }
 
     fn on_msg(&mut self, now: u64, from: PeerId, msg: AliasMessage) {
+        log::info!("[AliasServiceInternal] on msg from {from}, {msg:?}");
         match msg {
             AliasMessage::NotifySet(alias_id) => {
-                let slot = self.cache.get_or_insert_mut(alias_id, || HashSet::new());
+                let slot = self.cache.get_or_insert_mut(alias_id, HashSet::new);
                 slot.insert(from);
             }
             AliasMessage::NotifyDel(alias_id) => {
@@ -279,7 +283,7 @@ impl AliasServiceInternal {
                 }
             }
             AliasMessage::Found(alias_id) => {
-                let slot = self.cache.get_or_insert_mut(alias_id, || HashSet::new());
+                let slot = self.cache.get_or_insert_mut(alias_id, HashSet::new);
                 slot.insert(from);
 
                 if let Some(req) = self.find_reqs.remove(&alias_id) {
@@ -537,6 +541,33 @@ mod test {
         ctx.internal.on_msg(ctx.now, peer_addr, AliasMessage::NotFound(alias_id));
 
         // Verify broadcast scan message
+        let outputs = ctx.collect_outputs();
+        assert_eq!(outputs, vec![InternalOutput::Broadcast(AliasMessage::Scan(alias_id))]);
+    }
+
+    #[test]
+    fn test_find_cached_alias_timeout_switch_to_scan() {
+        let mut ctx = TestContext::new();
+        let alias_id = AliasId(1);
+        let peer_addr = PeerId(1);
+
+        // Add alias to cache
+        ctx.internal.on_msg(ctx.now, peer_addr, AliasMessage::NotifySet(alias_id));
+
+        // Create a oneshot channel for the find response
+        let (tx, _rx) = oneshot::channel();
+
+        // Test finding the cached alias
+        ctx.internal.on_control(ctx.now, AliasControl::Find(alias_id, tx));
+
+        // Verify unicast message to check with cached peer
+        let outputs = ctx.collect_outputs();
+        assert_eq!(outputs, vec![InternalOutput::Unicast(peer_addr, AliasMessage::Check(alias_id))]);
+
+        // Simulate timeout
+        ctx.advance_time(HINT_TIMEOUT_MS + 1);
+        ctx.internal.on_tick(ctx.now);
+
         let outputs = ctx.collect_outputs();
         assert_eq!(outputs, vec![InternalOutput::Broadcast(AliasMessage::Scan(alias_id))]);
     }

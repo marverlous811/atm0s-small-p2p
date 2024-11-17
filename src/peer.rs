@@ -69,7 +69,6 @@ impl PeerConnection {
     pub fn new_connecting<SECURE: HandshakeProtocol>(secure: Arc<SECURE>, local_id: PeerId, to_peer: PeerId, connecting: Connecting, internal_tx: Sender<InternalEvent>, ctx: SharedCtx) -> Self {
         let remote = connecting.remote_address();
         let conn_id = ConnectionId::rand();
-        let peer_id = to_peer.clone();
 
         tokio::spawn(async move {
             match connecting.await {
@@ -95,7 +94,7 @@ impl PeerConnection {
         });
         Self {
             conn_id,
-            peer_id: Some(peer_id),
+            peer_id: Some(to_peer),
             is_connected: false,
         }
     }

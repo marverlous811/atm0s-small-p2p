@@ -33,6 +33,7 @@ enum PeerConnectionControl {
 pub struct PeerConnection {
     conn_id: ConnectionId,
     peer_id: Option<PeerId>,
+    is_connected: bool,
 }
 
 impl PeerConnection {
@@ -58,7 +59,11 @@ impl PeerConnection {
                 Err(err) => internal_tx.send(InternalEvent::PeerConnectError(conn_id, None, err.into())).await.expect("should send to main"),
             }
         });
-        Self { conn_id, peer_id: None }
+        Self {
+            conn_id,
+            peer_id: None,
+            is_connected: false,
+        }
     }
 
     pub fn new_connecting<SECURE: HandshakeProtocol>(secure: Arc<SECURE>, local_id: PeerId, to_peer: PeerId, connecting: Connecting, internal_tx: Sender<InternalEvent>, ctx: SharedCtx) -> Self {
@@ -87,7 +92,11 @@ impl PeerConnection {
                     .expect("should send to main"),
             }
         });
-        Self { conn_id, peer_id: None }
+        Self {
+            conn_id,
+            peer_id: Some(to_peer),
+            is_connected: false,
+        }
     }
 
     pub fn conn_id(&self) -> ConnectionId {
@@ -99,11 +108,14 @@ impl PeerConnection {
     }
 
     pub fn set_connected(&mut self, peer_id: PeerId) {
-        self.peer_id = Some(peer_id);
+        if self.peer_id.is_none() {
+            self.peer_id = Some(peer_id);
+        }
+        self.is_connected = true
     }
 
     pub fn is_connected(&self) -> bool {
-        self.peer_id.is_some()
+        self.is_connected
     }
 }
 

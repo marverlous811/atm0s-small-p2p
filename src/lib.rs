@@ -13,7 +13,7 @@ use derive_more::derive::{Deref, Display, From};
 use discovery::{PeerDiscovery, PeerDiscoverySync};
 use msg::{P2pServiceId, PeerMessage};
 use neighbours::NetworkNeighbours;
-use peer::PeerConnection;
+use peer::{PeerConnection, PeerMetrics};
 use quinn::{Endpoint, Incoming, VarInt};
 use router::RouterTableSync;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
@@ -113,6 +113,7 @@ enum InternalEvent {
     PeerConnected(ConnectionId, PeerId, u16),
     PeerConnectError(ConnectionId, Option<PeerId>, anyhow::Error),
     PeerData(ConnectionId, PeerId, PeerMainData),
+    PeerStats(ConnectionId, PeerId, PeerMetrics),
     PeerDisconnected(ConnectionId, PeerId),
 }
 
@@ -269,6 +270,11 @@ impl<SECURE: HandshakeProtocol> P2pNetwork<SECURE> {
                 self.router.del_direct(&conn);
                 self.neighbours.remove(&conn);
                 Ok(P2pNetworkEvent::PeerDisconnected(conn, peer))
+            }
+            InternalEvent::PeerStats(conn, to_peer, metrics) => {
+                log::debug!("[P2pNetwork] conn {conn} to peer {to_peer} metrics {:?}", metrics);
+                self.ctx.update_metrics(&conn, to_peer, metrics);
+                Ok(P2pNetworkEvent::Continue)
             }
         }
     }

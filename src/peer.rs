@@ -24,6 +24,7 @@ mod peer_alias;
 mod peer_internal;
 
 pub use peer_alias::PeerConnectionAlias;
+pub use peer_internal::{InternalStreamEvent, PeerMetrics};
 
 enum PeerConnectionControl {
     Send(PeerMessage),

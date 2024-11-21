@@ -272,7 +272,7 @@ impl<SECURE: HandshakeProtocol> P2pNetwork<SECURE> {
                 Ok(P2pNetworkEvent::PeerDisconnected(conn, peer))
             }
             InternalEvent::PeerStats(conn, to_peer, metrics) => {
-                log::debug!("[P2pNetwork] conn {conn} to peer {to_peer} metrics {:?}", metrics);
+                log::info!("[P2pNetwork] conn {conn} to peer {to_peer} metrics {:?}", metrics);
                 self.ctx.update_metrics(&conn, to_peer, metrics);
                 Ok(P2pNetworkEvent::Continue)
             }

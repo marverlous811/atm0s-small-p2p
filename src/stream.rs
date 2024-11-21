@@ -1,4 +1,3 @@
-use std::time::Instant;
 use std::{fmt::Debug, marker::PhantomData};
 use std::{
     io,
@@ -8,27 +7,16 @@ use std::{
 
 use anyhow::anyhow;
 use serde::{de::DeserializeOwned, Serialize};
-use tokio::sync::mpsc::Sender;
 use tokio_util::codec::LengthDelimitedCodec;
 use tokio_util::codec::{Decoder, Encoder};
 
 use quinn::{RecvStream, SendStream};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::peer::InternalStreamEvent;
-
 #[derive(Debug)]
 pub struct P2pQuicStream {
     read: RecvStream,
     write: SendStream,
-    tx: Sender<InternalStreamEvent>,
-    started: Instant,
-}
-
-impl Drop for P2pQuicStream {
-    fn drop(&mut self) {
-        let _ = self.tx.try_send(InternalStreamEvent::Drop(self.started.elapsed().as_millis() as u64));
-    }
 }
 
 impl PartialEq for P2pQuicStream {
@@ -40,14 +28,8 @@ impl PartialEq for P2pQuicStream {
 impl Eq for P2pQuicStream {}
 
 impl P2pQuicStream {
-    pub fn new(read: RecvStream, write: SendStream, tx: Sender<InternalStreamEvent>) -> Self {
-        let _ = tx.try_send(InternalStreamEvent::Add);
-        Self {
-            read,
-            write,
-            started: Instant::now(),
-            tx,
-        }
+    pub fn new(read: RecvStream, write: SendStream) -> Self {
+        Self { read, write }
     }
 }
 

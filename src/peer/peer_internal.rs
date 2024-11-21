@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     io::copy_bidirectional,
     select,
-    sync::mpsc::{channel, Receiver, Sender},
+    sync::mpsc::{Receiver, Sender},
     time::Interval,
 };
 use tokio_util::codec::Framed;
@@ -33,16 +33,10 @@ use crate::{
 
 use super::PeerConnectionControl;
 
-pub enum InternalStreamEvent {
-    Add,
-    Drop(u64),
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PeerMetrics {
     pub uptime: u64,
     pub rtt: u16,
-    pub stream_cnt: usize,
     pub lost_pkt: u64,
     pub lost_bytes: u64,
     pub send_bytes: u64,
@@ -58,9 +52,6 @@ pub struct PeerConnectionInternal {
     framed: Framed<P2pQuicStream, BincodeCodec<PeerMessage>>,
     internal_tx: Sender<InternalEvent>,
     control_rx: Receiver<PeerConnectionControl>,
-    stream_event_tx: Sender<InternalStreamEvent>,
-    stream_event_rx: Receiver<InternalStreamEvent>,
-    stream_cnt: usize,
     ticker: Interval,
     started: Instant,
 }
@@ -77,8 +68,7 @@ impl PeerConnectionInternal {
         internal_tx: Sender<InternalEvent>,
         control_rx: Receiver<PeerConnectionControl>,
     ) -> Self {
-        let (tx, rx) = channel(100);
-        let stream = P2pQuicStream::new(main_recv, main_send, tx.clone());
+        let stream = P2pQuicStream::new(main_recv, main_send);
 
         Self {
             conn_id,
@@ -89,9 +79,6 @@ impl PeerConnectionInternal {
             framed: Framed::new(stream, BincodeCodec::default()),
             internal_tx,
             control_rx,
-            stream_event_rx: rx,
-            stream_event_tx: tx,
-            stream_cnt: 0,
             ticker: tokio::time::interval(Duration::from_secs(1)),
             started: Instant::now(),
         }
@@ -103,10 +90,10 @@ impl PeerConnectionInternal {
                 _ = self.ticker.tick() => {
                     let rtt_ms = self.connection.rtt().as_millis().min(u16::MAX as u128) as u16;
                     let connection_stats = self.connection.stats();
+                    log::info!("connection stats: {:?}", connection_stats);
                     self.ctx.router().set_direct(self.conn_id, self.to_id, rtt_ms);
                     let metrics = PeerMetrics {
                         uptime: self.started.elapsed().as_secs(),
-                        stream_cnt: self.stream_cnt,
                         lost_pkt: connection_stats.path.lost_packets,
                         lost_bytes: connection_stats.path.lost_bytes,
                         rtt: rtt_ms,
@@ -126,20 +113,6 @@ impl PeerConnectionInternal {
                 control = self.control_rx.recv() => {
                     let control = control.ok_or(anyhow!("peer control channel ended"))?;
                     self.on_control(control).await?;
-                },
-                stream_ev = self.stream_event_rx.recv() => {
-                    if let Some(ev) = stream_ev {
-                        match ev {
-                            InternalStreamEvent::Add => {
-                                self.stream_cnt += 1;
-                                log::debug!("on new stream created...");
-                            }
-                            InternalStreamEvent::Drop(duration) => {
-                                self.stream_cnt -= 1;
-                                log::debug!("on stream is dropped... lifetime {}", duration);
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -147,7 +120,7 @@ impl PeerConnectionInternal {
 
     async fn on_accept_bi(&mut self, send: SendStream, recv: RecvStream) -> anyhow::Result<()> {
         log::info!("[PeerConnectionInternal {}] on new bi", self.remote);
-        let stream = P2pQuicStream::new(recv, send, self.stream_event_tx.clone());
+        let stream = P2pQuicStream::new(recv, send);
         tokio::spawn(accept_bi(self.to_id, stream, self.ctx.clone()));
         Ok(())
     }
@@ -158,10 +131,9 @@ impl PeerConnectionInternal {
             PeerConnectionControl::OpenStream(service, source, dest, meta, tx) => {
                 let remote = self.remote;
                 let connection = self.connection.clone();
-                let stream_event_tx = self.stream_event_tx.clone();
                 tokio::spawn(async move {
                     log::info!("[PeerConnectionInternal {remote}] open_bi for service {service}");
-                    let res = open_bi(connection, source, dest, service, meta, stream_event_tx).await;
+                    let res = open_bi(connection, source, dest, service, meta).await;
                     if let Err(e) = &res {
                         log::error!("[PeerConnectionInternal {remote}] open_bi for service {service} error {e}");
                     } else {
@@ -223,9 +195,9 @@ impl PeerConnectionInternal {
     }
 }
 
-async fn open_bi(connection: Connection, source: PeerId, dest: PeerId, service: P2pServiceId, meta: Vec<u8>, stream_tx: Sender<InternalStreamEvent>) -> anyhow::Result<P2pQuicStream> {
+async fn open_bi(connection: Connection, source: PeerId, dest: PeerId, service: P2pServiceId, meta: Vec<u8>) -> anyhow::Result<P2pQuicStream> {
     let (send, recv) = connection.open_bi().await?;
-    let mut stream = P2pQuicStream::new(recv, send, stream_tx);
+    let mut stream = P2pQuicStream::new(recv, send);
     write_object::<_, _, 500>(&mut stream, &StreamConnectReq { source, dest, service, meta }).await?;
     let res = wait_object::<_, StreamConnectRes, 500>(&mut stream).await?;
     res.map(|_| stream).map_err(|e| anyhow!("{e}"))

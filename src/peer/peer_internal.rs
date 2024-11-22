@@ -37,10 +37,12 @@ use super::PeerConnectionControl;
 pub struct PeerConnectionMetric {
     pub uptime: u64,
     pub rtt: u16,
+    pub sent_pkt: u64,
     pub lost_pkt: u64,
     pub lost_bytes: u64,
     pub send_bytes: u64,
     pub recv_bytes: u64,
+    pub current_mtu: u16,
 }
 
 pub struct PeerConnectionInternal {
@@ -93,11 +95,13 @@ impl PeerConnectionInternal {
                     self.ctx.router().set_direct(self.conn_id, self.to_id, rtt_ms);
                     let metrics = PeerConnectionMetric {
                         uptime: self.started.elapsed().as_secs(),
+                        sent_pkt: connection_stats.path.sent_packets,
                         lost_pkt: connection_stats.path.lost_packets,
                         lost_bytes: connection_stats.path.lost_bytes,
                         rtt: rtt_ms,
                         send_bytes: connection_stats.udp_tx.bytes,
                         recv_bytes: connection_stats.udp_rx.bytes,
+                        current_mtu: connection_stats.path.current_mtu,
                     };
                     let _ = self.internal_tx.try_send(InternalEvent::PeerStats(self.conn_id, self.to_id, metrics));
                 },

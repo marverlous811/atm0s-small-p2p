@@ -13,7 +13,7 @@ use derive_more::derive::{Deref, Display, From};
 use discovery::{PeerDiscovery, PeerDiscoverySync};
 use msg::{P2pServiceId, PeerMessage};
 use neighbours::NetworkNeighbours;
-use peer::{PeerConnection, PeerMetrics};
+use peer::{PeerConnection, PeerConnectionMetric};
 use quinn::{Endpoint, Incoming, VarInt};
 use router::RouterTableSync;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
@@ -113,7 +113,7 @@ enum InternalEvent {
     PeerConnected(ConnectionId, PeerId, u16),
     PeerConnectError(ConnectionId, Option<PeerId>, anyhow::Error),
     PeerData(ConnectionId, PeerId, PeerMainData),
-    PeerStats(ConnectionId, PeerId, PeerMetrics),
+    PeerStats(ConnectionId, PeerId, PeerConnectionMetric),
     PeerDisconnected(ConnectionId, PeerId),
 }
 

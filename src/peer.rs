@@ -24,7 +24,7 @@ mod peer_alias;
 mod peer_internal;
 
 pub use peer_alias::PeerConnectionAlias;
-pub use peer_internal::PeerMetrics;
+pub use peer_internal::PeerConnectionMetric;
 
 enum PeerConnectionControl {
     Send(PeerMessage),

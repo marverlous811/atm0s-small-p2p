@@ -34,7 +34,7 @@ use crate::{
 use super::PeerConnectionControl;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub struct PeerMetrics {
+pub struct PeerConnectionMetric {
     pub uptime: u64,
     pub rtt: u16,
     pub lost_pkt: u64,
@@ -90,9 +90,8 @@ impl PeerConnectionInternal {
                 _ = self.ticker.tick() => {
                     let rtt_ms = self.connection.rtt().as_millis().min(u16::MAX as u128) as u16;
                     let connection_stats = self.connection.stats();
-                    log::info!("connection stats: {:?}", connection_stats);
                     self.ctx.router().set_direct(self.conn_id, self.to_id, rtt_ms);
-                    let metrics = PeerMetrics {
+                    let metrics = PeerConnectionMetric {
                         uptime: self.started.elapsed().as_secs(),
                         lost_pkt: connection_stats.path.lost_packets,
                         lost_bytes: connection_stats.path.lost_bytes,

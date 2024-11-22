@@ -31,7 +31,7 @@ async fn metric_collect() {
     let event_from_peers: Vec<(PeerId, usize)> = events
         .iter()
         .map(|e| match e {
-            MetricsServiceEvent::PeerMetrics(peer, metrics) => (*peer, metrics.len()),
+            MetricsServiceEvent::OnPeerConnectionMetric(peer, metrics) => (*peer, metrics.len()),
         })
         .collect();
 

@@ -7,7 +7,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::{
     msg::{BroadcastMsgId, P2pServiceId, PeerMessage},
-    peer::{PeerConnectionAlias, PeerMetrics},
+    peer::{PeerConnectionAlias, PeerConnectionMetric},
     router::{RouteAction, SharedRouterTable},
     service::P2pServiceEvent,
     stream::P2pQuicStream,
@@ -18,7 +18,7 @@ use crate::{
 #[derive(Debug)]
 struct SharedCtxInternal {
     conns: HashMap<ConnectionId, PeerConnectionAlias>,
-    conn_metrics: HashMap<ConnectionId, (PeerId, PeerMetrics)>,
+    conn_metrics: HashMap<ConnectionId, (PeerId, PeerConnectionMetric)>,
     received_broadcast_msg: LruCache<BroadcastMsgId, ()>,
     services: [Option<Sender<P2pServiceEvent>>; 256],
 }
@@ -50,11 +50,11 @@ impl SharedCtxInternal {
         self.conns.values().cloned().collect::<Vec<_>>()
     }
 
-    fn update_conn_metrics(&mut self, conn: &ConnectionId, peer: PeerId, metrics: PeerMetrics) {
+    fn update_conn_metrics(&mut self, conn: &ConnectionId, peer: PeerId, metrics: PeerConnectionMetric) {
         self.conn_metrics.insert(*conn, (peer, metrics));
     }
 
-    fn metrics(&self) -> Vec<(ConnectionId, PeerId, PeerMetrics)> {
+    fn metrics(&self) -> Vec<(ConnectionId, PeerId, PeerConnectionMetric)> {
         let mut ret = vec![];
         for (conn, (peer, metrics)) in self.conn_metrics.clone() {
             ret.push((conn, peer, metrics));
@@ -115,11 +115,11 @@ impl SharedCtx {
         self.ctx.read().conns()
     }
 
-    pub fn update_metrics(&self, conn: &ConnectionId, peer: PeerId, metrics: PeerMetrics) {
+    pub fn update_metrics(&self, conn: &ConnectionId, peer: PeerId, metrics: PeerConnectionMetric) {
         self.ctx.write().update_conn_metrics(conn, peer, metrics);
     }
 
-    pub fn metrics(&self) -> Vec<(ConnectionId, PeerId, PeerMetrics)> {
+    pub fn metrics(&self) -> Vec<(ConnectionId, PeerId, PeerConnectionMetric)> {
         self.ctx.read().metrics()
     }
 

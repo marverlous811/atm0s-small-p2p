@@ -13,7 +13,7 @@ use derive_more::derive::{Deref, Display, From};
 use discovery::{PeerDiscovery, PeerDiscoverySync};
 use msg::{P2pServiceId, PeerMessage};
 use neighbours::NetworkNeighbours;
-use peer::{PeerConnection, PeerConnectionMetric};
+use peer::PeerConnection;
 use quinn::{Endpoint, Incoming, VarInt};
 use router::RouterTableSync;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
@@ -44,6 +44,7 @@ mod stream;
 mod tests;
 mod utils;
 
+pub use peer::PeerConnectionMetric;
 pub use requester::P2pNetworkRequester;
 pub use router::SharedRouterTable;
 pub use secure::*;

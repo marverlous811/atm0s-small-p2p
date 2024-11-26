@@ -5,11 +5,15 @@
 //! - Only use async with current connection stream
 //! - For other communication should use try_send for avoiding blocking
 
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
 
 use anyhow::anyhow;
 use futures::{SinkExt, StreamExt};
 use quinn::{Connection, RecvStream, SendStream};
+use serde::{Deserialize, Serialize};
 use tokio::{
     io::copy_bidirectional,
     select,
@@ -24,10 +28,24 @@ use crate::{
     router::RouteAction,
     stream::{wait_object, write_object, BincodeCodec, P2pQuicStream},
     utils::ErrorExt,
-    ConnectionId, InternalEvent, P2pServiceEvent, PeerId, PeerMainData,
+    ConnectionId, MainEvent, P2pServiceEvent, PeerId, PeerMainData,
 };
 
 use super::PeerConnectionControl;
+
+const OPEN_BI_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PeerConnectionMetric {
+    pub uptime: u64,
+    pub rtt: u16,
+    pub sent_pkt: u64,
+    pub lost_pkt: u64,
+    pub lost_bytes: u64,
+    pub send_bytes: u64,
+    pub recv_bytes: u64,
+    pub current_mtu: u16,
+}
 
 pub struct PeerConnectionInternal {
     conn_id: ConnectionId,
@@ -36,9 +54,10 @@ pub struct PeerConnectionInternal {
     remote: SocketAddr,
     connection: Connection,
     framed: Framed<P2pQuicStream, BincodeCodec<PeerMessage>>,
-    internal_tx: Sender<InternalEvent>,
+    main_tx: Sender<MainEvent>,
     control_rx: Receiver<PeerConnectionControl>,
     ticker: Interval,
+    started: Instant,
 }
 
 impl PeerConnectionInternal {
@@ -50,7 +69,7 @@ impl PeerConnectionInternal {
         connection: Connection,
         main_send: SendStream,
         main_recv: RecvStream,
-        internal_tx: Sender<InternalEvent>,
+        main_tx: Sender<MainEvent>,
         control_rx: Receiver<PeerConnectionControl>,
     ) -> Self {
         let stream = P2pQuicStream::new(main_recv, main_send);
@@ -62,9 +81,10 @@ impl PeerConnectionInternal {
             remote: connection.remote_address(),
             connection,
             framed: Framed::new(stream, BincodeCodec::default()),
-            internal_tx,
+            main_tx,
             control_rx,
             ticker: tokio::time::interval(Duration::from_secs(1)),
+            started: Instant::now(),
         }
     }
 
@@ -73,7 +93,19 @@ impl PeerConnectionInternal {
             select! {
                 _ = self.ticker.tick() => {
                     let rtt_ms = self.connection.rtt().as_millis().min(u16::MAX as u128) as u16;
+                    let connection_stats = self.connection.stats();
                     self.ctx.router().set_direct(self.conn_id, self.to_id, rtt_ms);
+                    let metrics = PeerConnectionMetric {
+                        uptime: self.started.elapsed().as_secs(),
+                        sent_pkt: connection_stats.path.sent_packets,
+                        lost_pkt: connection_stats.path.lost_packets,
+                        lost_bytes: connection_stats.path.lost_bytes,
+                        rtt: rtt_ms,
+                        send_bytes: connection_stats.udp_tx.bytes,
+                        recv_bytes: connection_stats.udp_rx.bytes,
+                        current_mtu: connection_stats.path.current_mtu,
+                    };
+                    let _ = self.main_tx.try_send(MainEvent::PeerStats(self.conn_id, self.to_id, metrics));
                 },
                 open = self.connection.accept_bi() => {
                     let (send, recv) = open?;
@@ -86,7 +118,7 @@ impl PeerConnectionInternal {
                 control = self.control_rx.recv() => {
                     let control = control.ok_or(anyhow!("peer control channel ended"))?;
                     self.on_control(control).await?;
-                },
+                }
             }
         }
     }
@@ -122,7 +154,7 @@ impl PeerConnectionInternal {
     async fn on_msg(&mut self, msg: PeerMessage) -> anyhow::Result<()> {
         match msg {
             PeerMessage::Sync { route, advertise } => {
-                if let Err(_e) = self.internal_tx.try_send(InternalEvent::PeerData(self.conn_id, self.to_id, PeerMainData::Sync { route, advertise })) {
+                if let Err(_e) = self.main_tx.try_send(MainEvent::PeerData(self.conn_id, self.to_id, PeerMainData::Sync { route, advertise })) {
                     log::warn!("[PeerConnectionInternal {}] queue main loop full", self.remote);
                 }
             }
@@ -169,7 +201,7 @@ impl PeerConnectionInternal {
 }
 
 async fn open_bi(connection: Connection, source: PeerId, dest: PeerId, service: P2pServiceId, meta: Vec<u8>) -> anyhow::Result<P2pQuicStream> {
-    let (send, recv) = connection.open_bi().await?;
+    let (send, recv) = tokio::time::timeout(OPEN_BI_TIMEOUT, connection.open_bi()).await??;
     let mut stream = P2pQuicStream::new(recv, send);
     write_object::<_, _, 500>(&mut stream, &StreamConnectReq { source, dest, service, meta }).await?;
     let res = wait_object::<_, StreamConnectRes, 500>(&mut stream).await?;

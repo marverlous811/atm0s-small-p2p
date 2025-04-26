@@ -1,6 +1,7 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::anyhow;
+use metrics::{counter, gauge};
 use peer_internal::PeerConnectionInternal;
 use quinn::{Connecting, Connection, Incoming, RecvStream, SendStream};
 use serde::{Deserialize, Serialize};
@@ -15,7 +16,7 @@ use crate::{
     now_ms,
     secure::HandshakeProtocol,
     stream::{wait_object, write_object, P2pQuicStream},
-    ConnectionId, PeerId,
+    ConnectionId, PeerId, P2P_CONNECTION_PKT_LOSS, P2P_CONNECTION_RECV_BYTES, P2P_CONNECTION_RTT, P2P_CONNECTION_SENT_BYTES, P2P_CONNECTION_UPTIME, P2P_LIVE_CONNECTION_COUNT,
 };
 
 use super::{msg::PeerMessage, MainEvent};
@@ -187,6 +188,7 @@ async fn run_connection<SECURE: HandshakeProtocol>(
     let mut internal = PeerConnectionInternal::new(ctx.clone(), conn_id, to_id, connection.clone(), send, recv, main_tx.clone(), control_rx);
     log::info!("[PeerConnection {conn_id}] started {remote}, rtt: {rtt_ms}");
     ctx.register_conn(conn_id, alias);
+    gauge!(P2P_LIVE_CONNECTION_COUNT).increment(1);
     main_tx.send(MainEvent::PeerConnected(conn_id, to_id, rtt_ms)).await.expect("should send to main");
     log::info!("[PeerConnection {conn_id}] run loop for {remote}");
     if let Err(e) = internal.run_loop().await {
@@ -195,5 +197,11 @@ async fn run_connection<SECURE: HandshakeProtocol>(
     main_tx.send(MainEvent::PeerDisconnected(conn_id, to_id)).await.expect("should send to main");
     log::info!("[PeerConnection {conn_id}] end loop for {remote}");
     ctx.unregister_conn(&conn_id);
+    gauge!(P2P_LIVE_CONNECTION_COUNT).decrement(1);
+    counter!(P2P_CONNECTION_UPTIME, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).absolute(0);
+    gauge!(P2P_CONNECTION_PKT_LOSS, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).set(0.0);
+    counter!(P2P_CONNECTION_SENT_BYTES, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).absolute(0);
+    counter!(P2P_CONNECTION_RECV_BYTES, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).absolute(0);
+    gauge!(P2P_CONNECTION_RTT, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).set(0);
     Ok(())
 }

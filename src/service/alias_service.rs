@@ -6,6 +6,7 @@ use std::{
 use anyhow::anyhow;
 use derive_more::derive::{Display, From};
 use lru::LruCache;
+use metrics::{counter, gauge};
 use serde::{Deserialize, Serialize};
 use tokio::{
     select,
@@ -17,9 +18,10 @@ use tokio::{
 };
 
 use crate::{
+    stats::{P2P_ALIAS_CACHE_POP, P2P_ALIAS_CACHE_SIZE, P2P_ALIAS_CACHE_UPSERT},
     stream::P2pQuicStream,
     utils::{now_ms, ErrorExt, ErrorExt2},
-    PeerId,
+    PeerId, P2P_ALIAS_FIND_REQUEST, P2P_ALIAS_LIVE_FIND_REQUEST,
 };
 
 use super::{P2pService, P2pServiceEvent, P2pServiceRequester};
@@ -251,21 +253,31 @@ impl AliasServiceInternal {
         }
 
         for alias_id in timeout_reqs {
+            gauge!(P2P_ALIAS_LIVE_FIND_REQUEST).decrement(1);
             self.find_reqs.remove(&alias_id);
         }
+
+        self.collect_stats();
     }
 
     fn on_msg(&mut self, now: u64, from: PeerId, msg: AliasMessage) {
         log::info!("[AliasServiceInternal] on msg from {from}, {msg:?}");
         match msg {
             AliasMessage::NotifySet(alias_id) => {
-                let slot = self.cache.get_or_insert_mut(alias_id, HashSet::new);
+                let slot = match self.cache.get_mut(&alias_id) {
+                    Some(slot) => slot,
+                    None => {
+                        counter!(P2P_ALIAS_CACHE_UPSERT).increment(1);
+                        self.cache.get_or_insert_mut(alias_id, HashSet::new)
+                    }
+                };
                 slot.insert(from);
             }
             AliasMessage::NotifyDel(alias_id) => {
                 if let Some(slot) = self.cache.get_mut(&alias_id) {
                     slot.remove(&from);
                     if slot.is_empty() {
+                        counter!(P2P_ALIAS_CACHE_POP).increment(1);
                         self.cache.pop(&alias_id);
                     }
                 }
@@ -283,9 +295,16 @@ impl AliasServiceInternal {
                 }
             }
             AliasMessage::Found(alias_id) => {
-                let slot = self.cache.get_or_insert_mut(alias_id, HashSet::new);
+                let slot = match self.cache.get_mut(&alias_id) {
+                    Some(slot) => slot,
+                    None => {
+                        counter!(P2P_ALIAS_CACHE_UPSERT).increment(1);
+                        self.cache.get_or_insert_mut(alias_id, HashSet::new)
+                    }
+                };
                 slot.insert(from);
 
+                gauge!(P2P_ALIAS_LIVE_FIND_REQUEST).decrement(1);
                 if let Some(req) = self.find_reqs.remove(&alias_id) {
                     let found = if matches!(req.state, FindRequestState::Scan(_)) {
                         AliasFoundLocation::Scan(from)
@@ -301,6 +320,7 @@ impl AliasServiceInternal {
                 if let Some(slot) = self.cache.get_mut(&alias_id) {
                     slot.remove(&from);
                     if slot.is_empty() {
+                        counter!(P2P_ALIAS_CACHE_POP).increment(1);
                         self.cache.pop(&alias_id);
                     }
                 }
@@ -325,6 +345,7 @@ impl AliasServiceInternal {
                     removed_alias_ids.push(*k);
                 }
                 for alias_id in removed_alias_ids {
+                    counter!(P2P_ALIAS_CACHE_POP).increment(1);
                     self.cache.pop(&alias_id);
                 }
             }
@@ -359,6 +380,8 @@ impl AliasServiceInternal {
                     for peer in slot {
                         self.outs.push_back(InternalOutput::Unicast(*peer, AliasMessage::Check(alias_id)));
                     }
+                    gauge!(P2P_ALIAS_LIVE_FIND_REQUEST).increment(1);
+                    counter!(P2P_ALIAS_FIND_REQUEST).increment(1);
                     self.find_reqs.insert(
                         alias_id,
                         FindRequest {
@@ -368,6 +391,8 @@ impl AliasServiceInternal {
                     );
                 } else {
                     self.outs.push_back(InternalOutput::Broadcast(AliasMessage::Scan(alias_id)));
+                    gauge!(P2P_ALIAS_LIVE_FIND_REQUEST).increment(1);
+                    counter!(P2P_ALIAS_FIND_REQUEST).increment(1);
                     self.find_reqs.insert(
                         alias_id,
                         FindRequest {
@@ -385,6 +410,11 @@ impl AliasServiceInternal {
 
     fn pop_output(&mut self) -> Option<InternalOutput> {
         self.outs.pop_front()
+    }
+
+    pub fn collect_stats(&self) {
+        let cache_size = self.cache.len();
+        gauge!(P2P_ALIAS_CACHE_SIZE).set(cache_size as f64);
     }
 }
 

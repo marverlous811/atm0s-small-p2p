@@ -12,6 +12,7 @@ use std::{
 
 use anyhow::anyhow;
 use futures::{SinkExt, StreamExt};
+use metrics::{counter, gauge};
 use quinn::{Connection, RecvStream, SendStream};
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -28,7 +29,8 @@ use crate::{
     router::RouteAction,
     stream::{wait_object, write_object, BincodeCodec, P2pQuicStream},
     utils::ErrorExt,
-    ConnectionId, MainEvent, P2pServiceEvent, PeerId, PeerMainData,
+    ConnectionId, MainEvent, P2pServiceEvent, PeerId, PeerMainData, P2P_CONNECTION_CONGESTION_EVENTS, P2P_CONNECTION_LOST_BYTES, P2P_CONNECTION_LOST_PKT, P2P_CONNECTION_RECV_BYTES,
+    P2P_CONNECTION_RTT, P2P_CONNECTION_SENT_BYTES, P2P_CONNECTION_UPTIME,
 };
 
 use super::PeerConnectionControl;
@@ -105,6 +107,14 @@ impl PeerConnectionInternal {
                         recv_bytes: connection_stats.udp_rx.bytes,
                         current_mtu: connection_stats.path.current_mtu,
                     };
+
+                    gauge!(P2P_CONNECTION_RTT, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).set(metrics.rtt as f64);
+                    counter!(P2P_CONNECTION_UPTIME, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(metrics.uptime);
+                    counter!(P2P_CONNECTION_SENT_BYTES, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(metrics.send_bytes);
+                    counter!(P2P_CONNECTION_RECV_BYTES, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(metrics.recv_bytes);
+                    counter!(P2P_CONNECTION_LOST_BYTES, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(metrics.lost_bytes);
+                    counter!(P2P_CONNECTION_LOST_PKT, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(metrics.lost_pkt);
+                    counter!(P2P_CONNECTION_CONGESTION_EVENTS, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(connection_stats.path.congestion_events);
                     let _ = self.main_tx.try_send(MainEvent::PeerStats(self.conn_id, self.to_id, metrics));
                 },
                 open = self.connection.accept_bi() => {

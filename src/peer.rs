@@ -16,7 +16,7 @@ use crate::{
     now_ms,
     secure::HandshakeProtocol,
     stream::{wait_object, write_object, P2pQuicStream},
-    ConnectionId, PeerId, P2P_CONNECTION_PKT_LOSS, P2P_CONNECTION_RECV_BYTES, P2P_CONNECTION_RTT, P2P_CONNECTION_SENT_BYTES, P2P_CONNECTION_UPTIME, P2P_LIVE_CONNECTION_COUNT,
+    ConnectionId, PeerId, P2P_CONNECTION_RECV_BYTES, P2P_CONNECTION_RTT, P2P_CONNECTION_SENT_BYTES, P2P_CONNECTION_UPTIME, P2P_LIVE_CONNECTION_COUNT,
 };
 
 use super::{msg::PeerMessage, MainEvent};
@@ -198,10 +198,10 @@ async fn run_connection<SECURE: HandshakeProtocol>(
     log::info!("[PeerConnection {conn_id}] end loop for {remote}");
     ctx.unregister_conn(&conn_id);
     gauge!(P2P_LIVE_CONNECTION_COUNT).decrement(1);
+    gauge!(P2P_CONNECTION_RTT, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).set(0);
     counter!(P2P_CONNECTION_UPTIME, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).absolute(0);
-    gauge!(P2P_CONNECTION_PKT_LOSS, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).set(0.0);
+    counter!(P2P_CONNECTION_RTT, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).absolute(0);
     counter!(P2P_CONNECTION_SENT_BYTES, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).absolute(0);
     counter!(P2P_CONNECTION_RECV_BYTES, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).absolute(0);
-    gauge!(P2P_CONNECTION_RTT, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).set(0);
     Ok(())
 }

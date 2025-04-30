@@ -11,7 +11,6 @@ use anyhow::anyhow;
 use ctx::SharedCtx;
 use derive_more::derive::{Deref, Display, From};
 use discovery::{PeerDiscovery, PeerDiscoverySync};
-use metrics::{counter, gauge};
 use msg::{P2pServiceId, PeerMessage};
 use neighbours::NetworkNeighbours;
 use peer::PeerConnection;
@@ -182,7 +181,7 @@ impl<SECURE: HandshakeProtocol> P2pNetwork<SECURE> {
             control_tx,
             control_rx,
             ticker: tokio::time::interval(Duration::from_millis(cfg.tick_ms)),
-            ctx: SharedCtx::new(router.clone()),
+            ctx: SharedCtx::new(cfg.peer_id, router.clone()),
             router,
             discovery,
             secure: Arc::new(cfg.secure),
@@ -238,14 +237,6 @@ impl<SECURE: HandshakeProtocol> P2pNetwork<SECURE> {
             self.control_tx.send(ControlCmd::Connect(addr.clone(), None))?;
         }
 
-        let metrics = self.ctx.metrics();
-        for (_conn, peer, metrics) in metrics {
-            counter!(P2P_CONNECTION_UPTIME, "peer_id" => self.local_id.to_string(), "connect_to" => format!("{peer}")).absolute(metrics.uptime);
-            gauge!(P2P_CONNECTION_PKT_LOSS, "peer_id" => self.local_id.to_string(), "connect_to" => format!("{peer}")).set(metrics.lost_pkt as f64 / metrics.sent_pkt as f64 * 100.0);
-            counter!(P2P_CONNECTION_SENT_BYTES, "peer_id" => self.local_id.to_string(), "connect_to" => format!("{peer}")).absolute(metrics.send_bytes);
-            counter!(P2P_CONNECTION_RECV_BYTES, "peer_id" => self.local_id.to_string(), "connect_to" => format!("{peer}")).absolute(metrics.recv_bytes);
-            gauge!(P2P_CONNECTION_RTT, "peer_id" => self.local_id.to_string(), "connect_to" => format!("{peer}")).set(metrics.rtt as f64);
-        }
         Ok(P2pNetworkEvent::Continue)
     }
 

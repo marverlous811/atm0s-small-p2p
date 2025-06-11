@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, str::FromStr};
+use std::{net::SocketAddr, str::FromStr, time::Duration};
 
 use atm0s_small_p2p::{P2pNetwork, P2pNetworkConfig, PeerAddress, SharedKeyHandshake};
 use clap::Parser;
@@ -60,6 +60,7 @@ async fn main() {
         tick_ms: 100,
         seeds: args.sdn_seeds.into_iter().map(|s| PeerAddress::from_str(s.as_str()).expect("should parse address")).collect::<Vec<_>>(),
         secure: SharedKeyHandshake::from(args.sdn_secure_code.as_str()),
+        connect_timeout: Duration::from_secs(2),
     })
     .await
     .expect("should create network");

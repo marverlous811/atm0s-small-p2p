@@ -135,6 +135,7 @@ pub struct P2pNetworkConfig<SECURE> {
     pub tick_ms: u64,
     pub seeds: Vec<PeerAddress>,
     pub secure: SECURE,
+    pub connect_timeout: Duration,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -157,6 +158,7 @@ pub struct P2pNetwork<SECURE> {
     discovery: PeerDiscovery,
     ctx: SharedCtx,
     secure: Arc<SECURE>,
+    pub connect_timeout: Duration,
 }
 
 impl<SECURE: HandshakeProtocol> P2pNetwork<SECURE> {
@@ -185,6 +187,7 @@ impl<SECURE: HandshakeProtocol> P2pNetwork<SECURE> {
             router,
             discovery,
             secure: Arc::new(cfg.secure),
+            connect_timeout: cfg.connect_timeout,
         })
     }
 
@@ -243,7 +246,7 @@ impl<SECURE: HandshakeProtocol> P2pNetwork<SECURE> {
     fn process_incoming(&mut self, incoming: Incoming) -> anyhow::Result<P2pNetworkEvent> {
         let remote = incoming.remote_address();
         log::info!("[P2pNetwork] incoming connect from {remote} => accept");
-        let conn = PeerConnection::new_incoming(self.secure.clone(), self.local_id, incoming, self.main_tx.clone(), self.ctx.clone());
+        let conn = PeerConnection::new_incoming(self.secure.clone(), self.local_id, incoming, self.main_tx.clone(), self.ctx.clone(), self.connect_timeout);
         self.neighbours.insert(conn.conn_id(), conn);
         Ok(P2pNetworkEvent::Continue)
     }

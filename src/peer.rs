@@ -40,7 +40,7 @@ pub struct PeerConnection {
 }
 
 impl PeerConnection {
-    pub fn new_incoming<SECURE: HandshakeProtocol>(secure: Arc<SECURE>, local_id: PeerId, incoming: Incoming, main_tx: Sender<MainEvent>, ctx: SharedCtx) -> Self {
+    pub fn new_incoming<SECURE: HandshakeProtocol>(secure: Arc<SECURE>, local_id: PeerId, incoming: Incoming, main_tx: Sender<MainEvent>, ctx: SharedCtx, connection_timeout: Duration) -> Self {
         let remote = incoming.remote_address();
         let conn_id = ConnectionId::rand();
 
@@ -53,7 +53,7 @@ impl PeerConnection {
                         Ok((send, recv)) => {
                             if let Err(e) = run_connection(secure, ctx, remote, conn_id, local_id, PeerConnectionDirection::Incoming, &connection, send, recv, main_tx).await {
                                 log::error!("[PeerConnection {conn_id}] connection from {remote} error {e}");
-                                let _ = tokio::time::timeout(Duration::from_secs(2), connection.closed()).await;
+                                let _ = tokio::time::timeout(connection_timeout, connection.closed()).await;
                             }
                         }
                         Err(err) => main_tx.send(MainEvent::PeerConnectError(conn_id, None, err.into())).await.expect("should send to main"),

@@ -1,4 +1,4 @@
-use std::net::UdpSocket;
+use std::{net::UdpSocket, time::Duration};
 
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 
@@ -36,6 +36,7 @@ async fn create_node(advertise: bool, peer_id: u64, seeds: Vec<PeerAddress>) -> 
             tick_ms: 100,
             seeds,
             secure: DEFAULT_SECURE_KEY.into(),
+            connect_timeout: Duration::from_secs(2),
         })
         .await
         .expect("should create network"),

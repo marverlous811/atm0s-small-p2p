@@ -142,7 +142,7 @@ impl SharedCtx {
         let next = self.router.action(&dest).ok_or(anyhow!("route not found"))?;
         match next {
             RouteAction::Local => {
-                panic!("unsupported send to local node")
+                anyhow::bail!("unsupported send to local node")
             }
             RouteAction::Next(next) => {
                 let source = self.router.local_id();
@@ -158,7 +158,7 @@ impl SharedCtx {
         let next = self.router.action(&dest).ok_or(anyhow!("route not found"))?;
         match next {
             RouteAction::Local => {
-                panic!("unsupported send to local node")
+                anyhow::bail!("unsupported send to local node")
             }
             RouteAction::Next(next) => {
                 let source = self.router.local_id();

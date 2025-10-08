@@ -253,8 +253,9 @@ impl AliasServiceInternal {
         }
 
         for alias_id in timeout_reqs {
-            gauge!(P2P_ALIAS_LIVE_FIND_REQUEST).decrement(1);
-            self.find_reqs.remove(&alias_id);
+            if let Some(_) = self.find_reqs.remove(&alias_id) {
+                gauge!(P2P_ALIAS_LIVE_FIND_REQUEST).decrement(1);
+            }
         }
 
         self.collect_stats();
@@ -304,8 +305,8 @@ impl AliasServiceInternal {
                 };
                 slot.insert(from);
 
-                gauge!(P2P_ALIAS_LIVE_FIND_REQUEST).decrement(1);
                 if let Some(req) = self.find_reqs.remove(&alias_id) {
+                    gauge!(P2P_ALIAS_LIVE_FIND_REQUEST).decrement(1);
                     let found = if matches!(req.state, FindRequestState::Scan(_)) {
                         AliasFoundLocation::Scan(from)
                     } else {
@@ -345,8 +346,9 @@ impl AliasServiceInternal {
                     removed_alias_ids.push(*k);
                 }
                 for alias_id in removed_alias_ids {
-                    counter!(P2P_ALIAS_CACHE_POP).increment(1);
-                    self.cache.pop(&alias_id);
+                    if let Some(_) = self.cache.pop(&alias_id) {
+                        counter!(P2P_ALIAS_CACHE_POP).increment(1);
+                    }
                 }
             }
         }

@@ -12,6 +12,7 @@ use std::{
 
 use anyhow::anyhow;
 use futures::{SinkExt, StreamExt};
+use metrics::{counter, gauge};
 use quinn::{Connection, RecvStream, SendStream};
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -28,12 +29,14 @@ use crate::{
     router::RouteAction,
     stream::{wait_object, write_object, BincodeCodec, P2pQuicStream},
     utils::ErrorExt,
-    ConnectionId, MainEvent, P2pServiceEvent, PeerId, PeerMainData,
+    ConnectionId, MainEvent, P2pServiceEvent, PeerId, PeerMainData, P2P_CONNECTION_CONGESTION_EVENTS, P2P_CONNECTION_LOST_BYTES, P2P_CONNECTION_LOST_PKT, P2P_CONNECTION_RECV_BYTES,
+    P2P_CONNECTION_RTT, P2P_CONNECTION_SENT_BYTES, P2P_CONNECTION_UPTIME,
 };
 
 use super::PeerConnectionControl;
 
 const OPEN_BI_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_CONTROL_STREAM_PKT: usize = 60000;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PeerConnectionMetric {
@@ -105,6 +108,14 @@ impl PeerConnectionInternal {
                         recv_bytes: connection_stats.udp_rx.bytes,
                         current_mtu: connection_stats.path.current_mtu,
                     };
+
+                    gauge!(P2P_CONNECTION_RTT, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).set(metrics.rtt as f64);
+                    counter!(P2P_CONNECTION_UPTIME, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(metrics.uptime);
+                    counter!(P2P_CONNECTION_SENT_BYTES, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(metrics.send_bytes);
+                    counter!(P2P_CONNECTION_RECV_BYTES, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(metrics.recv_bytes);
+                    counter!(P2P_CONNECTION_LOST_BYTES, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(metrics.lost_bytes);
+                    counter!(P2P_CONNECTION_LOST_PKT, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(metrics.lost_pkt);
+                    counter!(P2P_CONNECTION_CONGESTION_EVENTS, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(connection_stats.path.congestion_events);
                     let _ = self.main_tx.try_send(MainEvent::PeerStats(self.conn_id, self.to_id, metrics));
                 },
                 open = self.connection.accept_bi() => {
@@ -203,19 +214,19 @@ impl PeerConnectionInternal {
 async fn open_bi(connection: Connection, source: PeerId, dest: PeerId, service: P2pServiceId, meta: Vec<u8>) -> anyhow::Result<P2pQuicStream> {
     let (send, recv) = tokio::time::timeout(OPEN_BI_TIMEOUT, connection.open_bi()).await??;
     let mut stream = P2pQuicStream::new(recv, send);
-    write_object::<_, _, 500>(&mut stream, &StreamConnectReq { source, dest, service, meta }).await?;
-    let res = wait_object::<_, StreamConnectRes, 500>(&mut stream).await?;
+    write_object::<_, _, MAX_CONTROL_STREAM_PKT>(&mut stream, &StreamConnectReq { source, dest, service, meta }).await?;
+    let res = wait_object::<_, StreamConnectRes, MAX_CONTROL_STREAM_PKT>(&mut stream).await?;
     res.map(|_| stream).map_err(|e| anyhow!("{e}"))
 }
 
 async fn accept_bi(to_peer: PeerId, mut stream: P2pQuicStream, ctx: SharedCtx) -> anyhow::Result<()> {
-    let req = wait_object::<_, StreamConnectReq, 500>(&mut stream).await?;
+    let req = wait_object::<_, StreamConnectReq, MAX_CONTROL_STREAM_PKT>(&mut stream).await?;
     let StreamConnectReq { dest, source, service, meta } = req;
     match ctx.router().action(&dest) {
         Some(RouteAction::Local) => {
             if let Some(service_tx) = ctx.get_service(&service) {
                 log::info!("[PeerConnectionInternal {to_peer}] stream service {service} source {source} to dest {dest} => process local");
-                write_object::<_, _, 500>(&mut stream, &Ok::<_, String>(())).await?;
+                write_object::<_, _, MAX_CONTROL_STREAM_PKT>(&mut stream, &Ok::<_, String>(())).await?;
                 service_tx
                     .send(P2pServiceEvent::Stream(source, meta, stream))
                     .await
@@ -223,7 +234,7 @@ async fn accept_bi(to_peer: PeerId, mut stream: P2pQuicStream, ctx: SharedCtx) -
                 Ok(())
             } else {
                 log::warn!("[PeerConnectionInternal {to_peer}] stream service {service} source {source} to dest {dest} => service not found");
-                write_object::<_, _, 500>(&mut stream, &Err::<(), _>("service not found".to_string())).await?;
+                write_object::<_, _, MAX_CONTROL_STREAM_PKT>(&mut stream, &Err::<(), _>("service not found".to_string())).await?;
                 Err(anyhow!("service not found"))
             }
         }
@@ -232,7 +243,7 @@ async fn accept_bi(to_peer: PeerId, mut stream: P2pQuicStream, ctx: SharedCtx) -
                 log::info!("[PeerConnectionInternal {to_peer}] stream service {service} source {source} to dest {dest} => forward to {next}");
                 match alias.open_stream(service, source, dest, meta).await {
                     Ok(mut next_stream) => {
-                        write_object::<_, _, 500>(&mut stream, &Ok::<_, String>(())).await?;
+                        write_object::<_, _, MAX_CONTROL_STREAM_PKT>(&mut stream, &Ok::<_, String>(())).await?;
                         log::info!("[PeerConnectionInternal {to_peer}] stream service {service} source {source} to dest {dest} => start copy_bidirectional");
                         match copy_bidirectional(&mut next_stream, &mut stream).await {
                             Ok(stats) => {
@@ -246,19 +257,19 @@ async fn accept_bi(to_peer: PeerId, mut stream: P2pQuicStream, ctx: SharedCtx) -
                     }
                     Err(err) => {
                         log::error!("[PeerConnectionInternal {to_peer}] stream service {service} source {source} to dest {dest} => open bi error {err}");
-                        write_object::<_, _, 500>(&mut stream, &Err::<(), _>(err.to_string())).await?;
+                        write_object::<_, _, MAX_CONTROL_STREAM_PKT>(&mut stream, &Err::<(), _>(err.to_string())).await?;
                         Err(err)
                     }
                 }
             } else {
                 log::warn!("[PeerConnectionInternal {to_peer}] new stream with service {service} source {source} to dest {dest} => but connection for next {next} not found");
-                write_object::<_, _, 500>(&mut stream, &Err::<(), _>("route not found".to_string())).await?;
+                write_object::<_, _, MAX_CONTROL_STREAM_PKT>(&mut stream, &Err::<(), _>("route not found".to_string())).await?;
                 Err(anyhow!("route not found"))
             }
         }
         None => {
             log::warn!("[PeerConnectionInternal {to_peer}] new stream with service {service} source {source} to dest {dest} => but route path not found");
-            write_object::<_, _, 500>(&mut stream, &Err::<(), _>("route not found".to_string())).await?;
+            write_object::<_, _, MAX_CONTROL_STREAM_PKT>(&mut stream, &Err::<(), _>("route not found".to_string())).await?;
             Err(anyhow!("route not found"))
         }
     }

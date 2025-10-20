@@ -39,6 +39,7 @@ mod requester;
 mod router;
 mod secure;
 mod service;
+mod stats;
 mod stream;
 #[cfg(test)]
 mod tests;
@@ -49,6 +50,7 @@ pub use requester::P2pNetworkRequester;
 pub use router::SharedRouterTable;
 pub use secure::*;
 pub use service::*;
+pub use stats::*;
 pub use stream::P2pQuicStream;
 pub use utils::*;
 
@@ -179,7 +181,7 @@ impl<SECURE: HandshakeProtocol> P2pNetwork<SECURE> {
             control_tx,
             control_rx,
             ticker: tokio::time::interval(Duration::from_millis(cfg.tick_ms)),
-            ctx: SharedCtx::new(router.clone()),
+            ctx: SharedCtx::new(cfg.peer_id, router.clone()),
             router,
             discovery,
             secure: Arc::new(cfg.secure),
@@ -234,6 +236,7 @@ impl<SECURE: HandshakeProtocol> P2pNetwork<SECURE> {
         for addr in self.discovery.remotes() {
             self.control_tx.send(ControlCmd::Connect(addr.clone(), None))?;
         }
+
         Ok(P2pNetworkEvent::Continue)
     }
 

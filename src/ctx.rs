@@ -78,13 +78,15 @@ impl SharedCtxInternal {
 
 #[derive(Debug, Clone)]
 pub struct SharedCtx {
+    local_id: PeerId,
     ctx: Arc<RwLock<SharedCtxInternal>>,
     router: SharedRouterTable,
 }
 
 impl SharedCtx {
-    pub fn new(router: SharedRouterTable) -> Self {
+    pub fn new(local_id: PeerId, router: SharedRouterTable) -> Self {
         Self {
+            local_id,
             ctx: Arc::new(RwLock::new(SharedCtxInternal {
                 conns: Default::default(),
                 conn_metrics: Default::default(),
@@ -93,6 +95,10 @@ impl SharedCtx {
             })),
             router,
         }
+    }
+
+    pub fn local_id(&self) -> PeerId {
+        self.local_id
     }
 
     pub(super) fn set_service(&mut self, service_id: P2pServiceId, tx: Sender<P2pServiceEvent>) {
@@ -142,7 +148,7 @@ impl SharedCtx {
         let next = self.router.action(&dest).ok_or(anyhow!("route not found"))?;
         match next {
             RouteAction::Local => {
-                panic!("unsupported send to local node")
+                anyhow::bail!("unsupported send to local node")
             }
             RouteAction::Next(next) => {
                 let source = self.router.local_id();
@@ -158,7 +164,7 @@ impl SharedCtx {
         let next = self.router.action(&dest).ok_or(anyhow!("route not found"))?;
         match next {
             RouteAction::Local => {
-                panic!("unsupported send to local node")
+                anyhow::bail!("unsupported send to local node")
             }
             RouteAction::Next(next) => {
                 let source = self.router.local_id();

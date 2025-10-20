@@ -109,6 +109,7 @@ async fn pubsub_local_multi_subs() {
         timeout(ttl, publisher.recv()).await.expect("should not timeout").expect("should recv"),
         PublisherEvent::PeerJoined(PeerSrc::Local)
     );
+    assert!(timeout(ttl, publisher.recv()).await.is_err()); // it should timeout because we don't fire join 2 times
 
     publisher.requester().publish(vec![1, 2, 3]).await.expect("should ok");
     assert_eq!(
@@ -153,6 +154,7 @@ async fn pubsub_local_multi_pubs() {
         timeout(ttl, subscriber.recv()).await.expect("should not timeout").expect("should recv"),
         SubscriberEvent::PeerJoined(PeerSrc::Local)
     );
+    assert!(timeout(ttl, subscriber.recv()).await.is_err()); // it should timeout because we don't fire join 2 times
     assert_eq!(
         timeout(ttl, publisher1.recv()).await.expect("should not timeout").expect("should recv"),
         PublisherEvent::PeerJoined(PeerSrc::Local)
@@ -400,7 +402,7 @@ async fn pubsub_remote_multi_pubs() {
 }
 
 #[test(tokio::test)]
-async fn pubsub_remote_heatbeat_restore() {
+async fn pubsub_remote_heartbeat_restore() {
     let (mut node1, addr1) = create_node(true, 1, vec![]).await;
     let mut service1 = PubsubService::new(node1.create_service(0.into()));
     let service1_requester = service1.requester();

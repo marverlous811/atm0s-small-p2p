@@ -1,6 +1,7 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::anyhow;
+use metrics::{counter, gauge};
 use peer_internal::PeerConnectionInternal;
 use quinn::{Connecting, Connection, Incoming, RecvStream, SendStream};
 use serde::{Deserialize, Serialize};
@@ -15,7 +16,8 @@ use crate::{
     now_ms,
     secure::HandshakeProtocol,
     stream::{wait_object, write_object, P2pQuicStream},
-    ConnectionId, PeerId,
+    ConnectionId, PeerId, P2P_CONNECTION_CONGESTION_EVENTS, P2P_CONNECTION_LOST_BYTES, P2P_CONNECTION_LOST_PKT, P2P_CONNECTION_RECV_BYTES, P2P_CONNECTION_RTT, P2P_CONNECTION_SENT_BYTES,
+    P2P_CONNECTION_UPTIME, P2P_LIVE_CONNECTION_COUNT,
 };
 
 use super::{msg::PeerMessage, MainEvent};
@@ -25,6 +27,8 @@ mod peer_internal;
 
 pub use peer_alias::PeerConnectionAlias;
 pub use peer_internal::PeerConnectionMetric;
+
+const MAX_CONTROL_PEER_PKT: usize = 60000;
 
 enum PeerConnectionControl {
     Send(PeerMessage),
@@ -146,8 +150,8 @@ async fn run_connection<SECURE: HandshakeProtocol>(
 ) -> anyhow::Result<()> {
     let to_id = if let PeerConnectionDirection::Outgoing(dest) = direction {
         let auth = secure.create_request(local_id, dest, now_ms());
-        write_object::<_, _, 500>(&mut send, &ConnectReq { from: local_id, to: dest, auth }).await?;
-        let res: ConnectRes = wait_object::<_, _, 500>(&mut recv).await?;
+        write_object::<_, _, MAX_CONTROL_PEER_PKT>(&mut send, &ConnectReq { from: local_id, to: dest, auth }).await?;
+        let res: ConnectRes = wait_object::<_, _, MAX_CONTROL_PEER_PKT>(&mut recv).await?;
         log::info!("{res:?}");
         match res.result {
             Ok(auth) => {
@@ -161,12 +165,12 @@ async fn run_connection<SECURE: HandshakeProtocol>(
             }
         }
     } else {
-        let req: ConnectReq = wait_object::<_, _, 500>(&mut recv).await?;
+        let req: ConnectReq = wait_object::<_, _, MAX_CONTROL_PEER_PKT>(&mut recv).await?;
         if let Err(e) = secure.verify_request(req.auth, req.from, req.to, now_ms()) {
-            write_object::<_, _, 500>(&mut send, &ConnectRes { result: Err(e.clone()) }).await?;
+            write_object::<_, _, MAX_CONTROL_PEER_PKT>(&mut send, &ConnectRes { result: Err(e.clone()) }).await?;
             return Err(anyhow!("destination auth failure: {e}"));
         } else if req.to != local_id {
-            write_object::<_, _, 500>(
+            write_object::<_, _, MAX_CONTROL_PEER_PKT>(
                 &mut send,
                 &ConnectRes {
                     result: Err("destination not match".to_owned()),
@@ -176,7 +180,7 @@ async fn run_connection<SECURE: HandshakeProtocol>(
             return Err(anyhow!("destination wrong"));
         } else {
             let auth = secure.create_response(req.to, req.from, now_ms());
-            write_object::<_, _, 500>(&mut send, &ConnectRes { result: Ok(auth) }).await?;
+            write_object::<_, _, MAX_CONTROL_PEER_PKT>(&mut send, &ConnectRes { result: Ok(auth) }).await?;
             req.from
         }
     };
@@ -187,6 +191,7 @@ async fn run_connection<SECURE: HandshakeProtocol>(
     let mut internal = PeerConnectionInternal::new(ctx.clone(), conn_id, to_id, connection.clone(), send, recv, main_tx.clone(), control_rx);
     log::info!("[PeerConnection {conn_id}] started {remote}, rtt: {rtt_ms}");
     ctx.register_conn(conn_id, alias);
+    gauge!(P2P_LIVE_CONNECTION_COUNT).increment(1);
     main_tx.send(MainEvent::PeerConnected(conn_id, to_id, rtt_ms)).await.expect("should send to main");
     log::info!("[PeerConnection {conn_id}] run loop for {remote}");
     if let Err(e) = internal.run_loop().await {
@@ -195,5 +200,14 @@ async fn run_connection<SECURE: HandshakeProtocol>(
     main_tx.send(MainEvent::PeerDisconnected(conn_id, to_id)).await.expect("should send to main");
     log::info!("[PeerConnection {conn_id}] end loop for {remote}");
     ctx.unregister_conn(&conn_id);
+    gauge!(P2P_LIVE_CONNECTION_COUNT).decrement(1);
+    gauge!(P2P_CONNECTION_RTT, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).set(0);
+    counter!(P2P_CONNECTION_UPTIME, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).absolute(0);
+    counter!(P2P_CONNECTION_RTT, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).absolute(0);
+    counter!(P2P_CONNECTION_SENT_BYTES, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).absolute(0);
+    counter!(P2P_CONNECTION_RECV_BYTES, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).absolute(0);
+    counter!(P2P_CONNECTION_LOST_BYTES, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).absolute(0);
+    counter!(P2P_CONNECTION_LOST_PKT, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).absolute(0);
+    counter!(P2P_CONNECTION_CONGESTION_EVENTS, "peer_id" => local_id.to_string(), "connect_to" => format!("{to_id}")).absolute(0);
     Ok(())
 }

@@ -11,14 +11,17 @@ use std::{
 };
 
 use anyhow::anyhow;
-use futures::{SinkExt, StreamExt};
+use futures::{
+    stream::{SplitSink, SplitStream},
+    SinkExt, StreamExt,
+};
 use metrics::{counter, gauge};
 use quinn::{Connection, RecvStream, SendStream};
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::copy_bidirectional,
     select,
-    sync::mpsc::{Receiver, Sender},
+    sync::mpsc::{self, Receiver, Sender},
     time::Interval,
 };
 use tokio_util::codec::Framed;
@@ -29,14 +32,10 @@ use crate::{
     router::RouteAction,
     stream::{wait_object, write_object, BincodeCodec, P2pQuicStream},
     utils::ErrorExt,
-    ConnectionId, MainEvent, P2pServiceEvent, PeerId, PeerMainData,
-    P2P_CONNECTION_BLACK_HOLES, P2P_CONNECTION_CONGESTION_EVENTS, P2P_CONNECTION_CWND,
-    P2P_CONNECTION_FRAME_RX_DATA_BLOCKED, P2P_CONNECTION_FRAME_RX_STREAM_DATA_BLOCKED,
-    P2P_CONNECTION_FRAME_TX_DATA_BLOCKED, P2P_CONNECTION_FRAME_TX_STREAM_DATA_BLOCKED,
-    P2P_CONNECTION_LOST_BYTES, P2P_CONNECTION_LOST_PKT, P2P_CONNECTION_MTU, P2P_CONNECTION_RECV_BYTES,
-    P2P_CONNECTION_RTT, P2P_CONNECTION_RX_RESET_STREAM, P2P_CONNECTION_RX_STREAM,
-    P2P_CONNECTION_SENT_BYTES, P2P_CONNECTION_TX_RESET_STREAM, P2P_CONNECTION_TX_STREAM,
-    P2P_CONNECTION_UDP_RX_DATAGRAMS, P2P_CONNECTION_UDP_TX_DATAGRAMS, P2P_CONNECTION_UPTIME,
+    ConnectionId, MainEvent, P2pServiceEvent, PeerId, PeerMainData, P2P_CONNECTION_BLACK_HOLES, P2P_CONNECTION_CONGESTION_EVENTS, P2P_CONNECTION_CWND, P2P_CONNECTION_FRAME_RX_DATA_BLOCKED,
+    P2P_CONNECTION_FRAME_RX_STREAM_DATA_BLOCKED, P2P_CONNECTION_FRAME_TX_DATA_BLOCKED, P2P_CONNECTION_FRAME_TX_STREAM_DATA_BLOCKED, P2P_CONNECTION_LOST_BYTES, P2P_CONNECTION_LOST_PKT,
+    P2P_CONNECTION_MTU, P2P_CONNECTION_RECV_BYTES, P2P_CONNECTION_RTT, P2P_CONNECTION_RX_RESET_STREAM, P2P_CONNECTION_RX_STREAM, P2P_CONNECTION_SENT_BYTES, P2P_CONNECTION_TX_RESET_STREAM,
+    P2P_CONNECTION_TX_STREAM, P2P_CONNECTION_UDP_RX_DATAGRAMS, P2P_CONNECTION_UDP_TX_DATAGRAMS, P2P_CONNECTION_UPTIME,
 };
 
 use super::PeerConnectionControl;
@@ -62,7 +61,9 @@ pub struct PeerConnectionInternal {
     ctx: SharedCtx,
     remote: SocketAddr,
     connection: Connection,
-    framed: Framed<P2pQuicStream, BincodeCodec<PeerMessage>>,
+    // framed: Framed<P2pQuicStream, BincodeCodec<PeerMessage>>,
+    frame_sender: mpsc::Sender<PeerMessage>,
+    framed_stream: SplitStream<Framed<P2pQuicStream, BincodeCodec<PeerMessage>>>,
     main_tx: Sender<MainEvent>,
     control_rx: Receiver<PeerConnectionControl>,
     ticker: Interval,
@@ -82,6 +83,13 @@ impl PeerConnectionInternal {
         control_rx: Receiver<PeerConnectionControl>,
     ) -> Self {
         let stream = P2pQuicStream::new(main_recv, main_send);
+        let frame = Framed::new(stream, BincodeCodec::default());
+        let (framed_sink, framed_stream) = frame.split();
+        let (tx, rx) = mpsc::channel(100);
+        let mut frame_sender = FramedSender::new(rx, framed_sink);
+        tokio::spawn(async move {
+            frame_sender.run_loop().await;
+        });
 
         Self {
             conn_id,
@@ -89,7 +97,8 @@ impl PeerConnectionInternal {
             ctx,
             remote: connection.remote_address(),
             connection,
-            framed: Framed::new(stream, BincodeCodec::default()),
+            frame_sender: tx,
+            framed_stream,
             main_tx,
             control_rx,
             ticker: tokio::time::interval(Duration::from_secs(1)),
@@ -155,13 +164,35 @@ impl PeerConnectionInternal {
                     let (send, recv) = open?;
                     self.on_accept_bi(send, recv).await?;
                 },
-                frame = self.framed.next() => {
+                frame = self.framed_stream.next() => {
                     let msg = frame.ok_or(anyhow!("peer main stream ended"))??;
                     self.on_msg(msg).await?;
                 },
                 control = self.control_rx.recv() => {
                     let control = control.ok_or(anyhow!("peer control channel ended"))?;
-                    self.on_control(control).await?;
+                    match control {
+                        PeerConnectionControl::Send(item) => {
+                            if let Err(e) = self.frame_sender.try_send(item) {
+                                log::error!("[PeerConnectionInternal {}] send frame error {e}", self.remote);
+                            }
+                        },
+                        PeerConnectionControl::OpenStream(service, source, dest, meta, tx) => {
+                            let remote = self.remote;
+                            let connection = self.connection.clone();
+                            tokio::spawn(async move {
+                                log::info!("[PeerConnectionInternal {remote}] open_bi for service {service}");
+                                let res = open_bi(connection, source, dest, service, meta).await;
+                                if let Err(e) = &res {
+                                    log::error!("[PeerConnectionInternal {remote}] open_bi for service {service} error {e}");
+                                } else {
+                                    log::info!("[PeerConnectionInternal {remote}] open_bi for service {service} success");
+                                }
+                                tx.send(res).map_err(|_| "internal channel error").print_on_err("[PeerConnectionInternal] answer open_bi");
+                            });
+                        }
+                    }
+
+                    // self.on_control(control).await?;
                 }
             }
         }
@@ -172,27 +203,6 @@ impl PeerConnectionInternal {
         let stream = P2pQuicStream::new(recv, send);
         tokio::spawn(accept_bi(self.to_id, stream, self.ctx.clone()));
         Ok(())
-    }
-
-    async fn on_control(&mut self, control: PeerConnectionControl) -> anyhow::Result<()> {
-        match control {
-            PeerConnectionControl::Send(item) => Ok(self.framed.send(item).await?),
-            PeerConnectionControl::OpenStream(service, source, dest, meta, tx) => {
-                let remote = self.remote;
-                let connection = self.connection.clone();
-                tokio::spawn(async move {
-                    log::info!("[PeerConnectionInternal {remote}] open_bi for service {service}");
-                    let res = open_bi(connection, source, dest, service, meta).await;
-                    if let Err(e) = &res {
-                        log::error!("[PeerConnectionInternal {remote}] open_bi for service {service} error {e}");
-                    } else {
-                        log::info!("[PeerConnectionInternal {remote}] open_bi for service {service} success");
-                    }
-                    tx.send(res).map_err(|_| "internal channel error").print_on_err("[PeerConnectionInternal] answer open_bi");
-                });
-                Ok(())
-            }
-        }
     }
 
     async fn on_msg(&mut self, msg: PeerMessage) -> anyhow::Result<()> {
@@ -304,6 +314,26 @@ async fn accept_bi(to_peer: PeerId, mut stream: P2pQuicStream, ctx: SharedCtx) -
             log::warn!("[PeerConnectionInternal {to_peer}] new stream with service {service} source {source} to dest {dest} => but route path not found");
             write_object::<_, _, MAX_CONTROL_STREAM_PKT>(&mut stream, &Err::<(), _>("route not found".to_string())).await?;
             Err(anyhow!("route not found"))
+        }
+    }
+}
+
+struct FramedSender {
+    recv: mpsc::Receiver<PeerMessage>,
+    framed_sink: SplitSink<Framed<P2pQuicStream, BincodeCodec<PeerMessage>>, PeerMessage>,
+}
+
+impl FramedSender {
+    pub fn new(recv: mpsc::Receiver<PeerMessage>, framed_sink: SplitSink<Framed<P2pQuicStream, BincodeCodec<PeerMessage>>, PeerMessage>) -> Self {
+        Self { recv, framed_sink }
+    }
+
+    pub async fn run_loop(&mut self) {
+        while let Some(msg) = self.recv.recv().await {
+            if let Err(e) = self.framed_sink.send(msg).await {
+                log::error!("framed sender error {e}");
+                break;
+            }
         }
     }
 }

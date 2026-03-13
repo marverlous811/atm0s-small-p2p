@@ -29,8 +29,14 @@ use crate::{
     router::RouteAction,
     stream::{wait_object, write_object, BincodeCodec, P2pQuicStream},
     utils::ErrorExt,
-    ConnectionId, MainEvent, P2pServiceEvent, PeerId, PeerMainData, P2P_CONNECTION_CONGESTION_EVENTS, P2P_CONNECTION_LOST_BYTES, P2P_CONNECTION_LOST_PKT, P2P_CONNECTION_RECV_BYTES,
-    P2P_CONNECTION_RTT, P2P_CONNECTION_SENT_BYTES, P2P_CONNECTION_UPTIME,
+    ConnectionId, MainEvent, P2pServiceEvent, PeerId, PeerMainData,
+    P2P_CONNECTION_BLACK_HOLES, P2P_CONNECTION_CONGESTION_EVENTS, P2P_CONNECTION_CWND,
+    P2P_CONNECTION_FRAME_RX_DATA_BLOCKED, P2P_CONNECTION_FRAME_RX_STREAM_DATA_BLOCKED,
+    P2P_CONNECTION_FRAME_TX_DATA_BLOCKED, P2P_CONNECTION_FRAME_TX_STREAM_DATA_BLOCKED,
+    P2P_CONNECTION_LOST_BYTES, P2P_CONNECTION_LOST_PKT, P2P_CONNECTION_MTU, P2P_CONNECTION_RECV_BYTES,
+    P2P_CONNECTION_RTT, P2P_CONNECTION_RX_RESET_STREAM, P2P_CONNECTION_RX_STREAM,
+    P2P_CONNECTION_SENT_BYTES, P2P_CONNECTION_TX_RESET_STREAM, P2P_CONNECTION_TX_STREAM,
+    P2P_CONNECTION_UDP_RX_DATAGRAMS, P2P_CONNECTION_UDP_TX_DATAGRAMS, P2P_CONNECTION_UPTIME,
 };
 
 use super::PeerConnectionControl;
@@ -109,13 +115,40 @@ impl PeerConnectionInternal {
                         current_mtu: connection_stats.path.current_mtu,
                     };
 
-                    gauge!(P2P_CONNECTION_RTT, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).set(metrics.rtt as f64);
-                    counter!(P2P_CONNECTION_UPTIME, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(metrics.uptime);
-                    counter!(P2P_CONNECTION_SENT_BYTES, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(metrics.send_bytes);
-                    counter!(P2P_CONNECTION_RECV_BYTES, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(metrics.recv_bytes);
-                    counter!(P2P_CONNECTION_LOST_BYTES, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(metrics.lost_bytes);
-                    counter!(P2P_CONNECTION_LOST_PKT, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(metrics.lost_pkt);
-                    counter!(P2P_CONNECTION_CONGESTION_EVENTS, "peer_id" => self.ctx.local_id().to_string(), "connect_to" => format!("{}", self.to_id)).absolute(connection_stats.path.congestion_events);
+                    let peer_id = self.ctx.local_id().to_string();
+                    let connect_to = format!("{}", self.to_id);
+
+                    // Path / transport metrics
+                    gauge!(P2P_CONNECTION_RTT, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).set(metrics.rtt as f64);
+                    counter!(P2P_CONNECTION_UPTIME, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(metrics.uptime);
+                    counter!(P2P_CONNECTION_SENT_BYTES, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(metrics.send_bytes);
+                    counter!(P2P_CONNECTION_RECV_BYTES, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(metrics.recv_bytes);
+                    counter!(P2P_CONNECTION_LOST_BYTES, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(metrics.lost_bytes);
+                    counter!(P2P_CONNECTION_LOST_PKT, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(metrics.lost_pkt);
+                    counter!(P2P_CONNECTION_CONGESTION_EVENTS, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(connection_stats.path.congestion_events);
+
+                    // Congestion window and MTU – small cwnd or MTU changes hint at drop causes
+                    gauge!(P2P_CONNECTION_CWND, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).set(connection_stats.path.cwnd as f64);
+                    gauge!(P2P_CONNECTION_MTU, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).set(connection_stats.path.current_mtu as f64);
+                    counter!(P2P_CONNECTION_BLACK_HOLES, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(connection_stats.path.black_holes_detected);
+
+                    // UDP datagram counts (sent vs received asymmetry → network-level drops)
+                    counter!(P2P_CONNECTION_UDP_TX_DATAGRAMS, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(connection_stats.udp_tx.datagrams);
+                    counter!(P2P_CONNECTION_UDP_RX_DATAGRAMS, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(connection_stats.udp_rx.datagrams);
+
+                    // Stream frame counters (data throughput indicator)
+                    counter!(P2P_CONNECTION_TX_STREAM, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(connection_stats.frame_tx.stream);
+                    counter!(P2P_CONNECTION_RX_STREAM, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(connection_stats.frame_rx.stream);
+
+                    // RESET_STREAM frames (abrupt stream teardowns)
+                    counter!(P2P_CONNECTION_TX_RESET_STREAM, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(connection_stats.frame_tx.reset_stream);
+                    counter!(P2P_CONNECTION_RX_RESET_STREAM, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(connection_stats.frame_rx.reset_stream);
+
+                    // Flow-control stall frames (non-zero values indicate back-pressure → drops)
+                    counter!(P2P_CONNECTION_FRAME_TX_DATA_BLOCKED, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(connection_stats.frame_tx.data_blocked);
+                    counter!(P2P_CONNECTION_FRAME_RX_DATA_BLOCKED, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(connection_stats.frame_rx.data_blocked);
+                    counter!(P2P_CONNECTION_FRAME_TX_STREAM_DATA_BLOCKED, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(connection_stats.frame_tx.stream_data_blocked);
+                    counter!(P2P_CONNECTION_FRAME_RX_STREAM_DATA_BLOCKED, "peer_id" => peer_id.clone(), "connect_to" => connect_to.clone()).absolute(connection_stats.frame_rx.stream_data_blocked);
                     let _ = self.main_tx.try_send(MainEvent::PeerStats(self.conn_id, self.to_id, metrics));
                 },
                 open = self.connection.accept_bi() => {
